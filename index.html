@@ -20,9 +20,10 @@
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-        let db;
-        let auth;
+        let db = null; // Initialize to null
+        let auth = null; // Initialize to null
         let userId = 'anonymous';
+        let firebaseReady = false; // New flag to track readiness
 
         // Set log level for debugging Firestore issues
         setLogLevel('debug'); 
@@ -30,8 +31,11 @@
         // --- GLOBAL INITIALIZATION FUNCTION ---
         async function initializeFirebase() {
             if (!firebaseConfig) {
-                console.error("Firebase configuration is missing.");
-                showCustomMessage("Error", "Firebase configuration is missing. Cannot save data.", "error");
+                console.warn("Firebase configuration is missing. Data persistence (saving/loading) will be disabled.");
+                // We set firebaseReady to false, but let the rest of the app continue.
+                document.getElementById('save-button').disabled = false; // Allow saving button, but let the function handle the failure
+                document.getElementById('user-id-display').textContent = `User ID: (Persistence Disabled)`;
+                window.loadAlbum(); // Still call loadAlbum to initialize the gallery UI
                 return;
             }
 
@@ -53,16 +57,18 @@
                 onAuthStateChanged(auth, (user) => {
                     if (user) {
                         userId = user.uid;
+                        firebaseReady = true;
                         console.log("User ID ready:", userId);
                         window.db = db;
                         window.userId = userId;
                         window.loadAlbum(); // Load data once authenticated
                     } else {
-                        // Use a random ID if anonymous sign-in failed (fallback)
+                        // Fallback logic for anonymous sign-in or sign-out
                         userId = crypto.randomUUID(); 
+                        firebaseReady = true;
                         window.db = db;
                         window.userId = userId;
-                        window.loadAlbum(); // Load data even without auth (will use anonymous ID)
+                        window.loadAlbum(); 
                         console.log("User signed out or failed auth. Using generated ID:", userId);
                     }
                     document.getElementById('user-id-display').textContent = `User ID: ${userId}`;
@@ -84,6 +90,15 @@
         };
 
         window.saveAlbumData = async (photos) => {
+            if (!firebaseConfig) {
+                showCustomMessage("Save Failed", "Data persistence is disabled because Firebase configuration is missing.", "error");
+                return false;
+            }
+            if (!db || !userId) {
+                showCustomMessage("Save Failed", "Firebase services are not fully initialized yet. Try again in a moment.", "error");
+                return false;
+            }
+
             const albumRef = doc(db, 'artifacts', appId, 'users', userId, 'photoAlbums', 'myAlbum');
             try {
                 // IMPORTANT: Photo data is stored as a JSON string to handle large/complex array structure
@@ -101,6 +116,14 @@
         };
 
         window.loadAlbumData = async () => {
+            if (!firebaseConfig) {
+                 return []; // If persistence is disabled, return empty array.
+            }
+            if (!db || !userId) {
+                console.warn("Attempted to load data before Firebase was initialized.");
+                return [];
+            }
+
             const albumRef = doc(db, 'artifacts', appId, 'users', userId, 'photoAlbums', 'myAlbum');
             try {
                 const docSnap = await getDoc(albumRef);
