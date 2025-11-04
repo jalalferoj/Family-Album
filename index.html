@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Family Photo Album & Slideshow</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Firebase Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection, query, addDoc, serverTimestamp, getDocs, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // Use global variables provided by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db;
+        let auth;
+        let userId = 'anonymous';
+
+        // Set log level for debugging Firestore issues
+        setLogLevel('debug'); 
+
+        // --- GLOBAL INITIALIZATION FUNCTION ---
+        async function initializeFirebase() {
+            if (!firebaseConfig) {
+                console.error("Firebase configuration is missing.");
+                showCustomMessage("Error", "Firebase configuration is missing. Cannot save data.", "error");
+                return;
+            }
+
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                // 1. Authentication
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                    console.log("Signed in with custom token.");
+                } else {
+                    await signInAnonymously(auth);
+                    console.log("Signed in anonymously.");
+                }
+
+                // 2. Auth State Listener
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        console.log("User ID ready:", userId);
+                        window.db = db;
+                        window.userId = userId;
+                        window.loadAlbum(); // Load data once authenticated
+                    } else {
+                        // Use a random ID if anonymous sign-in failed (fallback)
+                        userId = crypto.randomUUID(); 
+                        window.db = db;
+                        window.userId = userId;
+                        window.loadAlbum(); // Load data even without auth (will use anonymous ID)
+                        console.log("User signed out or failed auth. Using generated ID:", userId);
+                    }
+                    document.getElementById('user-id-display').textContent = `User ID: ${userId}`;
+                });
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
+                showCustomMessage("Error", `Firebase initialization failed: ${error.message}`, "error");
+            }
+        }
+
+        // Expose Firebase functions to global scope
+        window.initializeFirebase = initializeFirebase;
+        window.showCustomMessage = showCustomMessage; // Expose custom message function
+
+        // --- FIREBASE UTILITIES ---
+        window.getCollectionRef = () => {
+             // Collection path: /artifacts/{appId}/users/{userId}/{collectionName}
+            return collection(db, 'artifacts', appId, 'users', userId, 'photoAlbums');
+        };
+
+        window.saveAlbumData = async (photos) => {
+            const albumRef = doc(db, 'artifacts', appId, 'users', userId, 'photoAlbums', 'myAlbum');
+            try {
+                // IMPORTANT: Photo data is stored as a JSON string to handle large/complex array structure
+                await setDoc(albumRef, {
+                    photos: JSON.stringify(photos),
+                    updatedAt: serverTimestamp()
+                });
+                console.log("Album saved successfully.");
+                return true;
+            } catch (e) {
+                console.error("Error saving document: ", e);
+                showCustomMessage("Save Error", `Could not save album: ${e.message}`, "error");
+                return false;
+            }
+        };
+
+        window.loadAlbumData = async () => {
+            const albumRef = doc(db, 'artifacts', appId, 'users', userId, 'photoAlbums', 'myAlbum');
+            try {
+                const docSnap = await getDoc(albumRef);
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    // Parse the JSON string back into an array
+                    return JSON.parse(data.photos || '[]');
+                } else {
+                    console.log("No existing album found.");
+                    return [];
+                }
+            } catch (e) {
+                console.error("Error loading document: ", e);
+                showCustomMessage("Load Error", `Could not load album: ${e.message}`, "error");
+                return [];
+            }
+        };
+
+        // 3. Custom Message Box Implementation (Replaces alert/confirm)
+        function showCustomMessage(title, message, type) {
+            let existingModal = document.getElementById('custom-modal');
+            if (existingModal) { existingModal.remove(); }
+
+            const modal = document.createElement('div');
+            modal.id = 'custom-modal';
+            modal.className = 'fixed inset-0 bg-gray-900 bg-opacity-75 z-[100] flex items-center justify-center p-4 transition-opacity duration-300 opacity-0';
+            modal.innerHTML = `
+                <div class="bg-white rounded-xl shadow-2xl max-w-sm w-full p-6 transform transition-transform duration-300 scale-90">
+                    <div class="flex items-center justify-between mb-4">
+                        <h4 class="text-xl font-bold ${type === 'success' ? 'text-indigo-600' : 'text-red-500'}">${title}</h4>
+                        <button onclick="document.getElementById('custom-modal').classList.add('opacity-0', 'scale-90'); setTimeout(() => document.getElementById('custom-modal').remove(), 300);" class="text-gray-400 hover:text-gray-600">
+                            <i data-lucide="x" class="w-5 h-5"></i>
+                        </button>
+                    </div>
+                    <p class="text-gray-700 mb-6">${message}</p>
+                    <div class="flex justify-end">
+                        <button onclick="document.getElementById('custom-modal').classList.add('opacity-0', 'scale-90'); setTimeout(() => document.getElementById('custom-modal').remove(), 300);" class="py-2 px-4 ${type === 'success' ? 'bg-indigo-600 text-white' : 'bg-red-500 text-white'} rounded-lg hover:opacity-90 transition duration-150 font-semibold">
+                            Close
+                        </button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            lucide.createIcons();
+            setTimeout(() => {
+                modal.classList.remove('opacity-0');
+                modal.querySelector('div:last-child').classList.remove('scale-90');
+            }, 10);
+        }
+
+        window.showCustomMessage = showCustomMessage;
+
+        // Initialize Firebase on window load
+        window.addEventListener('load', initializeFirebase);
+    </script>
+    <style>
+        :root {
+            --color-primary: #4f46e5; /* Indigo 600 */
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            min-height: 100vh;
+        }
+        /* Custom styles for the full-screen slideshow */
+        #slideshow-modal {
+            display: none;
+            z-index: 90; /* Below custom-modal (100) */
+            background-color: rgba(0, 0, 0, 0.95);
+        }
+        #slideshow-modal.active {
+            display: flex;
+        }
+        .slideshow-image {
+            max-width: 90%;
+            max-height: 90%;
+            object-fit: contain;
+            transition: opacity 0.5s ease-in-out;
+        }
+        .gallery-image-wrapper {
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            cursor: pointer;
+        }
+        .gallery-image-wrapper:hover {
+            transform: translateY(-4px) scale(1.02);
+            box-shadow: 0 10px 20px rgba(79, 70, 229, 0.4); /* Indigo Shadow */
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+
+    <!-- Main Application Container -->
+    <div class="min-h-screen flex flex-col">
+        <!-- Header -->
+        <header class="bg-white shadow-md sticky top-0 z-50">
+            <div class="container mx-auto px-4 py-4 flex flex-col sm:flex-row justify-between items-center">
+                <h1 class="text-3xl font-extrabold text-gray-900 mb-2 sm:mb-0 flex items-center">
+                    <i data-lucide="image-plus" class="w-8 h-8 mr-2 text-indigo-600"></i>
+                    <span class="text-indigo-600">Family</span> Album
+                </h1>
+                <div class="text-sm text-gray-500" id="user-id-display">User ID: Loading...</div>
+            </div>
+        </header>
+
+        <!-- Gallery Content -->
+        <main class="flex-grow container mx-auto px-4 py-8">
+            <div class="bg-white p-6 rounded-xl shadow-lg mb-8">
+                <h2 class="text-2xl font-bold text-gray-800 mb-4 flex items-center">
+                    <i data-lucide="gallery-vertical" class="w-6 h-6 mr-2 text-indigo-500"></i>
+                    Your Family Photo Gallery
+                </h2>
+
+                <!-- Control Panel -->
+                <div class="flex flex-col md:flex-row space-y-4 md:space-y-0 md:space-x-4 mb-6 items-center">
+                    <label for="file-input" class="cursor-pointer py-3 px-6 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 transition duration-150 flex items-center w-full md:w-auto justify-center">
+                        <i data-lucide="upload-cloud" class="w-5 h-5 mr-2"></i>
+                        Upload New Pictures
+                        <input type="file" id="file-input" multiple accept="image/*" class="hidden">
+                    </label>
+
+                    <button id="slideshow-button" class="py-3 px-6 bg-yellow-500 text-gray-900 font-semibold rounded-lg shadow-md hover:bg-yellow-600 transition duration-150 flex items-center w-full md:w-auto justify-center disabled:opacity-50" disabled>
+                        <i data-lucide="monitor-dot" class="w-5 h-5 mr-2"></i>
+                        Start Full-Screen Slideshow
+                    </button>
+                    
+                    <button id="save-button" class="py-3 px-6 bg-green-500 text-white font-semibold rounded-lg shadow-md hover:bg-green-600 transition duration-150 flex items-center w-full md:w-auto justify-center disabled:opacity-50">
+                        <i data-lucide="save" class="w-5 h-5 mr-2"></i>
+                        Save Album
+                    </button>
+                </div>
+                
+                <p id="gallery-status" class="text-center text-gray-600 mt-4">Upload pictures to start your album! (Images are stored locally as Base64 strings.)</p>
+                <div id="loading-indicator" class="hidden text-center text-indigo-500 mt-4">
+                     <i data-lucide="loader-circle" class="w-6 h-6 animate-spin inline-block"></i> Loading saved album...
+                </div>
+            </div>
+
+            <!-- Photo Grid -->
+            <div id="photo-grid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                <!-- Images will be inserted here -->
+            </div>
+
+            <!-- Empty State -->
+            <div id="empty-state" class="text-center p-12 bg-gray-100 rounded-xl shadow-inner mt-8">
+                <i data-lucide="image-off" class="w-12 h-12 mx-auto text-gray-400 mb-4"></i>
+                <p class="text-gray-600 font-semibold">Your album is currently empty. Click 'Upload New Pictures' to begin!</p>
+            </div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="bg-gray-100 py-4 text-center text-sm text-gray-500 border-t border-gray-200">
+            &copy; 2025 Family Photo Album. Data saved to Firestore using your unique User ID.
+        </footer>
+    </div>
+
+    <!-- Full-Screen Slideshow Modal -->
+    <div id="slideshow-modal" class="fixed inset-0 flex flex-col items-center justify-center p-4" onclick="hideSlideshow(event)">
+        <!-- Image Container -->
+        <div class="flex-grow w-full flex items-center justify-center relative">
+            <img id="slideshow-img" class="slideshow-image" src="" alt="Slideshow Image">
+            <p id="slideshow-caption" class="absolute bottom-4 left-1/2 transform -translate-x-1/2 bg-black bg-opacity-70 text-white py-2 px-4 rounded-lg text-lg hidden">Caption Text</p>
+        </div>
+
+        <!-- Controls -->
+        <div class="absolute inset-0 flex items-center justify-between pointer-events-none">
+            <button id="prev-button" class="pointer-events-auto bg-white/30 hover:bg-white/50 text-white p-4 rounded-full ml-2 transition duration-200" onclick="changeSlide(-1)">
+                <i data-lucide="chevron-left" class="w-8 h-8"></i>
+            </button>
+            <button id="next-button" class="pointer-events-auto bg-white/30 hover:bg-white/50 text-white p-4 rounded-full mr-2 transition duration-200" onclick="changeSlide(1)">
+                <i data-lucide="chevron-right" class="w-8 h-8"></i>
+            </button>
+        </div>
+
+        <!-- Close Button -->
+        <button class="absolute top-4 right-4 bg-white/30 hover:bg-red-500 text-white p-2 rounded-full pointer-events-auto transition duration-200" onclick="hideSlideshow(event, true)">
+            <i data-lucide="x" class="w-8 h-8"></i>
+        </button>
+
+        <!-- Auto-Play Toggle -->
+         <button id="autoplay-toggle" class="absolute bottom-4 left-4 bg-white/30 hover:bg-white/50 text-white py-2 px-4 rounded-full pointer-events-auto transition duration-200 flex items-center" onclick="toggleAutoplay(event)">
+            <i data-lucide="play" class="w-5 h-5 mr-2"></i>
+            <span id="autoplay-text">Start Auto-Play</span>
+        </button>
+    </div>
+
+    <script>
+        // Initialize Lucide icons
+        lucide.createIcons();
+        
+        // Data Store (Base64 strings of images and optional captions)
+        let photoAlbum = [];
+        let currentSlideIndex = 0;
+        let slideshowInterval;
+        const SLIDE_DURATION = 4000; // 4 seconds
+
+        const fileInput = document.getElementById('file-input');
+        const photoGrid = document.getElementById('photo-grid');
+        const slideshowModal = document.getElementById('slideshow-modal');
+        const slideshowImg = document.getElementById('slideshow-img');
+        const slideshowButton = document.getElementById('slideshow-button');
+        const emptyState = document.getElementById('empty-state');
+        const loadingIndicator = document.getElementById('loading-indicator');
+        const autoplayToggle = document.getElementById('autoplay-toggle');
+        const autoplayText = document.getElementById('autoplay-text');
+
+        // --- CORE UI FUNCTIONS ---
+
+        function updateUI() {
+            // 1. Update Gallery Grid
+            photoGrid.innerHTML = '';
+            if (photoAlbum.length === 0) {
+                emptyState.classList.remove('hidden');
+                slideshowButton.disabled = true;
+            } else {
+                emptyState.classList.add('hidden');
+                slideshowButton.disabled = false;
+                
+                photoAlbum.forEach((photo, index) => {
+                    const imgWrapper = document.createElement('div');
+                    imgWrapper.className = 'gallery-image-wrapper relative group aspect-square rounded-xl overflow-hidden shadow-md';
+                    imgWrapper.setAttribute('data-index', index);
+                    imgWrapper.onclick = () => showSlideshow(index);
+
+                    imgWrapper.innerHTML = `
+                        <img src="${photo.data}" alt="Family Photo ${index + 1}" class="w-full h-full object-cover">
+                        <div class="absolute inset-0 bg-black bg-opacity-30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition duration-300">
+                            <button class="text-white p-2" onclick="deletePhoto(event, ${index})">
+                                <i data-lucide="trash-2" class="w-6 h-6 hover:text-red-500"></i>
+                            </button>
+                        </div>
+                    `;
+                    photoGrid.appendChild(imgWrapper);
+                });
+                lucide.createIcons(); // Re-render icons after adding content
+            }
+        }
+
+        // --- FILE HANDLING ---
+
+        fileInput.addEventListener('change', (event) => {
+            const files = Array.from(event.target.files);
+            if (files.length === 0) return;
+
+            const totalFiles = files.length;
+            let loadedCount = 0;
+
+            showCustomMessage("Processing Images", `Loading ${totalFiles} file(s) into the album. This may take a moment.`, "success");
+
+            files.forEach(file => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    // Add new photo object (Base64 data + optional placeholder caption)
+                    photoAlbum.push({ 
+                        data: e.target.result, 
+                        caption: file.name 
+                    });
+                    loadedCount++;
+
+                    if (loadedCount === totalFiles) {
+                        updateUI();
+                        // Clear the input value so the same file can be uploaded again if needed
+                        fileInput.value = ''; 
+                        showCustomMessage("Success", `Successfully added ${totalFiles} new photo(s) to the album! Don't forget to save.`, "success");
+                    }
+                };
+                reader.onerror = (e) => {
+                    console.error("Error reading file:", file.name, e);
+                    showCustomMessage("File Error", `Failed to read file: ${file.name}`, "error");
+                    loadedCount++; // Ensure count increments even on failure
+                    if (loadedCount === totalFiles) {
+                        updateUI();
+                        fileInput.value = '';
+                    }
+                };
+                reader.readAsDataURL(file);
+            });
+        });
+
+        // --- ALBUM MODIFICATION ---
+
+        window.deletePhoto = (event, index) => {
+            event.stopPropagation(); // Prevent launching slideshow
+            photoAlbum.splice(index, 1);
+            updateUI();
+            document.getElementById('save-button').classList.add('ring-4', 'ring-red-500/50'); // Visual cue to save
+            showCustomMessage("Photo Deleted", "Photo removed from the current album. Remember to Save Changes!", "error");
+        };
+        
+        // --- SLIDESHOW LOGIC ---
+
+        window.showSlide = (index) => {
+            if (photoAlbum.length === 0) return;
+            currentSlideIndex = (index + photoAlbum.length) % photoAlbum.length;
+            
+            // Set image and caption with a fade effect
+            slideshowImg.style.opacity = '0';
+            setTimeout(() => {
+                slideshowImg.src = photoAlbum[currentSlideIndex].data;
+                slideshowImg.alt = photoAlbum[currentSlideIndex].caption;
+                document.getElementById('slideshow-caption').textContent = photoAlbum[currentSlideIndex].caption;
+                slideshowImg.style.opacity = '1';
+            }, 100); 
+        };
+
+        window.changeSlide = (direction) => {
+            // Stop autoplay on manual slide change
+            stopAutoplay();
+            showSlide(currentSlideIndex + direction);
+        };
+
+        window.showSlideshow = (startIndex = 0) => {
+            if (photoAlbum.length === 0) {
+                 showCustomMessage("Empty Album", "Please upload pictures before starting the slideshow.", "error");
+                 return;
+            }
+            slideshowModal.classList.add('active');
+            showSlide(startIndex);
+            document.body.classList.add('overflow-hidden'); // Lock scrolling
+        };
+
+        window.hideSlideshow = (event, force = false) => {
+            // Only close if clicking the modal background or explicitly via close button
+            if (force || event.target.id === 'slideshow-modal') {
+                slideshowModal.classList.remove('active');
+                document.body.classList.remove('overflow-hidden');
+                stopAutoplay();
+            }
+        };
+
+        window.toggleAutoplay = (event) => {
+            event.stopPropagation();
+            if (slideshowInterval) {
+                stopAutoplay();
+            } else {
+                startAutoplay();
+            }
+        };
+
+        function startAutoplay() {
+            if (slideshowInterval) return;
+            
+            slideshowInterval = setInterval(() => {
+                showSlide(currentSlideIndex + 1);
+            }, SLIDE_DURATION);
+
+            autoplayToggle.classList.remove('bg-white/30');
+            autoplayToggle.classList.add('bg-secondary/70');
+            autoplayToggle.innerHTML = `<i data-lucide="pause" class="w-5 h-5 mr-2"></i><span id="autoplay-text">Pause Auto-Play</span>`;
+            lucide.createIcons();
+        }
+
+        function stopAutoplay() {
+            if (slideshowInterval) {
+                clearInterval(slideshowInterval);
+                slideshowInterval = null;
+            }
+            autoplayToggle.classList.remove('bg-secondary/70');
+            autoplayToggle.classList.add('bg-white/30');
+            autoplayToggle.innerHTML = `<i data-lucide="play" class="w-5 h-5 mr-2"></i><span id="autoplay-text">Start Auto-Play</span>`;
+            lucide.createIcons();
+        }
+
+        // Event listener for slideshow button
+        slideshowButton.addEventListener('click', () => {
+            showSlideshow(0); // Start from the first photo
+        });
+        
+        // --- FIREBASE DATA INTEGRATION ---
+
+        document.getElementById('save-button').addEventListener('click', async () => {
+            document.getElementById('save-button').disabled = true;
+            document.getElementById('save-button').innerHTML = `<i data-lucide="loader-circle" class="w-5 h-5 mr-2 animate-spin"></i> Saving...`;
+            lucide.createIcons();
+
+            const success = await saveAlbumData(photoAlbum);
+
+            document.getElementById('save-button').disabled = false;
+            document.getElementById('save-button').innerHTML = `<i data-lucide="save" class="w-5 h-5 mr-2"></i> Save Album`;
+            
+            if (success) {
+                document.getElementById('save-button').classList.remove('ring-4', 'ring-red-500/50');
+                showCustomMessage("Success", "Your photo album has been successfully saved!", "success");
+            }
+        });
+
+        window.loadAlbum = async () => {
+            loadingIndicator.classList.remove('hidden');
+            const savedPhotos = await loadAlbumData();
+            loadingIndicator.classList.add('hidden');
+            
+            if (savedPhotos.length > 0) {
+                photoAlbum = savedPhotos;
+                updateUI();
+                showCustomMessage("Welcome Back!", `Successfully loaded ${photoAlbum.length} photos from your saved album.`, "success");
+            } else {
+                updateUI();
+            }
+        };
+
+    </script>
+</body>
+</html>
